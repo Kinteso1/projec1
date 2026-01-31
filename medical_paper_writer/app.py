@@ -120,9 +120,35 @@ def render_sidebar():
 
         st.divider()
 
-        # Export project
-        if st.button("💾 Экспорт проекта"):
-            export_project()
+        # Save/Load project
+        st.markdown("### Сохранение проекта")
+
+        # Save button
+        if st.session_state.study_type:  # Only show if project started
+            json_str = export_project()
+            st.download_button(
+                label="💾 Сохранить проект",
+                data=json_str,
+                file_name="medical_paper_project.json",
+                mime="application/json",
+                help="Скачать проект для продолжения позже"
+            )
+
+        # Load project
+        uploaded_project = st.file_uploader(
+            "📂 Загрузить проект",
+            type=['json'],
+            help="Загрузить ранее сохранённый проект"
+        )
+        if uploaded_project:
+            success, message = load_project(uploaded_project)
+            if success:
+                st.success(message)
+                st.rerun()
+            else:
+                st.error(message)
+
+        st.divider()
 
         # Reset
         if st.button("🔄 Начать заново"):
@@ -335,7 +361,13 @@ def render_step_3_endpoints():
     # Secondary endpoints
     st.markdown("#### Вторичные конечные точки")
 
+    # Combine all options including previously added custom ones
     secondary_options = fallback.get("secondary", []) + suggested[3:]
+    # Add any custom endpoints that were previously added
+    for ep in st.session_state.secondary_endpoints:
+        if ep not in secondary_options:
+            secondary_options.append(ep)
+    secondary_options = list(dict.fromkeys(secondary_options))  # Remove duplicates
 
     secondary = st.multiselect(
         "Выберите вторичные конечные точки (рекомендуется 3-5)",
@@ -343,9 +375,14 @@ def render_step_3_endpoints():
         default=st.session_state.secondary_endpoints if st.session_state.secondary_endpoints else []
     )
 
+    # Add custom endpoint
     custom_secondary = st.text_input("Добавить свою вторичную точку")
-    if custom_secondary and st.button("Добавить"):
-        secondary.append(custom_secondary)
+    if custom_secondary:
+        if st.button("Добавить"):
+            if custom_secondary not in secondary:
+                secondary.append(custom_secondary)
+                st.session_state.secondary_endpoints = secondary
+                st.rerun()
 
     st.session_state.secondary_endpoints = secondary
 
@@ -937,22 +974,71 @@ def render_abstract_section():
 
 def export_project():
     """Export project data as JSON."""
+    # Prepare sample size result for serialization
+    sample_size_data = None
+    if st.session_state.sample_size_result:
+        ssr = st.session_state.sample_size_result
+        sample_size_data = {
+            'n_per_group': ssr.n_per_group,
+            'n_total': ssr.n_total,
+            'power': ssr.power,
+            'alpha': ssr.alpha,
+            'parameters': ssr.parameters,
+            'formula_description': ssr.formula_description,
+            'assumptions': ssr.assumptions,
+            'recommendation': ssr.recommendation,
+        }
+
     project_data = {
+        'version': '1.0',
+        'current_step': st.session_state.current_step,
         'study_type': st.session_state.study_type,
         'pico': st.session_state.pico.to_dict(),
         'primary_endpoint': st.session_state.primary_endpoint,
         'secondary_endpoints': st.session_state.secondary_endpoints,
+        'sample_size_result': sample_size_data,
         'generated_sections': st.session_state.generated_sections,
     }
 
     json_str = json.dumps(project_data, ensure_ascii=False, indent=2)
+    return json_str
 
-    st.download_button(
-        label="📥 Скачать проект (JSON)",
-        data=json_str,
-        file_name="medical_paper_project.json",
-        mime="application/json"
-    )
+
+def load_project(uploaded_file):
+    """Load project from JSON file."""
+    try:
+        project_data = json.load(uploaded_file)
+
+        # Restore state
+        st.session_state.current_step = project_data.get('current_step', 0)
+        st.session_state.study_type = project_data.get('study_type')
+        st.session_state.primary_endpoint = project_data.get('primary_endpoint')
+        st.session_state.secondary_endpoints = project_data.get('secondary_endpoints', [])
+        st.session_state.generated_sections = project_data.get('generated_sections', {})
+
+        # Restore PICO
+        pico_data = project_data.get('pico', {})
+        st.session_state.pico = PICOQuestion.from_dict(pico_data)
+
+        # Restore sample size (basic info, not full object)
+        sample_data = project_data.get('sample_size_result')
+        if sample_data:
+            from modules.sample_size import SampleSizeResult, DesignType
+            st.session_state.sample_size_result = SampleSizeResult(
+                n_per_group=sample_data['n_per_group'],
+                n_total=sample_data['n_total'],
+                power=sample_data['power'],
+                alpha=sample_data['alpha'],
+                design_type=DesignType.TWO_MEANS,  # Default, actual type not critical for display
+                parameters=sample_data.get('parameters', {}),
+                formula_description=sample_data.get('formula_description', ''),
+                assumptions=sample_data.get('assumptions', ''),
+                recommendation=sample_data.get('recommendation', ''),
+            )
+
+        return True, "Проект успешно загружен!"
+    except Exception as e:
+        return False, f"Ошибка загрузки: {str(e)}"
 
 
 def main():
